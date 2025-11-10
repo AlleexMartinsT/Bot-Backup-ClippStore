@@ -1,7 +1,7 @@
 import os, json
 from datetime import datetime
 from pathlib import Path
-import pyautogui
+import pyautogui, threading
 import ctypes
 import time
 from pywinauto import Application, Desktop
@@ -10,7 +10,36 @@ APPDATA = Path(os.getenv("APPDATA", Path.home() / "AppData/Roaming"))
 LOG_DIR = APPDATA / "BackupBot" / "relatorios"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "backup_log.txt"
-_conf_path = Path(__file__).parent / "config.json"
+
+_stop_event = threading.Event()
+
+def fechar_tudo():
+    """Fecha interface, tray e threads de forma limpa."""
+    global tray
+    log("Encerrando aplicação...")
+
+    _stop_event.set()
+    
+def get_config_path() -> Path:
+    try:
+        appdata = Path(os.getenv("APPDATA")) / "BackupBot"
+        appdata.mkdir(parents=True, exist_ok=True)
+        ctypes.windll.kernel32.SetFileAttributesW(str(appdata), 2)  # deixa oculto
+        config_path = appdata / "config.json"
+
+        # se não existir, cria base
+        if not config_path.exists():
+            default_path = Path(__file__).parent / "config.json"
+            if default_path.exists():
+                config_path.write_text(default_path.read_text(encoding="utf-8"), encoding="utf-8")
+            else:
+                config_path.write_text("{}", encoding="utf-8")
+
+        return config_path
+    except Exception:
+        return Path(__file__).parent / "config.json"
+
+_conf_path = get_config_path()
 
 BM_CLICK = 0x00F5
 
@@ -71,7 +100,6 @@ def _click_control_no_mouse(ctrl) -> bool:
         pass
 
     return False
-
 
 def find_and_click_information_ok(logger=None, timeout: int = 8) -> bool:
     """

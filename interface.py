@@ -1,16 +1,33 @@
 # interface.py
 import customtkinter as ctk
-import json
+import json, os
 import threading
+import ctypes
+from tkinter import filedialog
+from PIL import Image, ImageTk
+from itertools import cycle
 from datetime import datetime, timedelta
 from pathlib import Path
-from utils import log
+from utils import log, get_config_path
 from agendador import get_proximo_backup, atualizar_horario_config
+from win32com.client import Dispatch
+from tray import ICON_PATH
 
 _this_dir = Path(__file__).parent
-_conf_path = _this_dir / "config.json"
+
+_conf_path = get_config_path()
+if not _conf_path.exists():
+    _conf_path.write_text("{}", encoding="utf-8")
+    
 with open(_conf_path, encoding="utf-8") as f:
-    conf = json.load(f)
+    try:
+        conf = json.load(f)
+    except json.JSONDecodeError:
+        conf = {} 
+
+# Caminho dos ícones
+ICON_PATH_CONFIG = Path(__file__).parent / "icons" / "config.png"
+icon_path = Path(__file__).parent / "icons" / "backup_icon.ico"
 
 BASED_THEME_PATH = _this_dir / "basedTheme.json"
 if BASED_THEME_PATH.exists():
@@ -23,27 +40,116 @@ ctk.set_appearance_mode("dark")
 class InterfaceApp:
     def __init__(self):
         self.root = ctk.CTk()
+
+        # 🔧 Garante que o Windows reconheça o app na barra de tarefas
+        try:
+            myappid = u"BackupBot.App"  # identificador único
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception as e:
+            print("Falha ao registrar AppID:", e)
+
         self.root.title("Backup Bot")
-        self.root.geometry("340x100")
+        self.root.geometry("340x130")
         self.root.resizable(False, False)
+
+        # mantém aparência custom
+        self.root.overrideredirect(True)
+        self.root.iconbitmap(ICON_PATH)
+
         self._posicionar_canto()
+        self.fechar_callback = None
+
+        # 🔧 força aparecer na barra de tarefas mesmo com overrideredirect
+        try:
+            hwnd = self.root.winfo_id()  # usa o próprio handle da janela
+            # Define o ícone associado ao AppID
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BackupBot.App")
+            ctypes.windll.user32.ShowWindow(hwnd, 5)  # 5 = SW_SHOW
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            print("Falha ao fixar na barra de tarefas:", e)
 
         # Variáveis
         self.backup_em_andamento = False
         self._stop_event = threading.Event()
         self._popup_aberto = None
 
-        # Conteúdo
+        # === Barra de título custom ===
+        title_bar = ctk.CTkFrame(self.root, height=28, fg_color="#2b2b2b")
+        title_bar.pack(fill="x", side="top")
+
+        # Função arrastar janela
+        def start_move(event):
+            self._x_click = event.x
+            self._y_click = event.y
+
+        def stop_move(event):
+            self._x_click = None
+            self._y_click = None
+
+        def do_move(event):
+            x = self.root.winfo_pointerx() - self._x_click
+            y = self.root.winfo_pointery() - self._y_click
+            self.root.geometry(f"+{x}+{y}")
+
+        title_bar.bind("<Button-1>", start_move)
+        title_bar.bind("<ButtonRelease-1>", stop_move)
+        title_bar.bind("<B1-Motion>", do_move)
+
+        # --- Título ---
+        lbl_titulo = ctk.CTkLabel(title_bar, text="Backup Bot", font=("Segoe UI", 13, "bold"))
+        lbl_titulo.pack(side="left", padx=(10, 0))
+
+        # --- Botão Configurações (ícone ⚙️) ---
+        
+        config_img = ctk.CTkImage(
+        light_image=Image.open(ICON_PATH_CONFIG),
+        dark_image=Image.open(ICON_PATH_CONFIG),
+        size=(18, 18)  
+        )
+        
+        btn_config = ctk.CTkButton(
+            title_bar,
+            image=config_img,
+            text="",
+            width=30,
+            height=22,
+            fg_color="transparent",
+            text_color="#f0f0f0",
+            hover_color="#c23b3b", 
+            command=self._abrir_configuracoes
+        )
+        btn_config.pack(side="right", padx=(0, 4), pady=2)
+
+        # --- Botão Fechar (X) ---
+        btn_close = ctk.CTkButton(
+            title_bar,
+            text="✖",
+            width=28,
+            height=24,
+            fg_color="transparent",
+            hover_color="#c23b3b",   # vermelho suave
+            text_color="#f0f0f0",    # branco gelo
+            font=("Segoe UI", 14, "bold"),
+            cursor="hand2",
+            command=self._on_close
+        )
+        btn_close.pack(side="right", padx=(2, 6), pady=2)
+
+        # === Corpo principal ===
         self.labelTempo = ctk.CTkLabel(self.root, text="Próximo backup: --:--")
         self.labelTempo.pack(pady=(12, 6))
+
         self.btnFrame = ctk.CTkFrame(self.root)
         self.btnFrame.pack(fill="x", padx=12, pady=(0, 12))
+
         self.btnAlterar = ctk.CTkButton(self.btnFrame, text="Alterar agenda", command=self._alterar_agenda)
         self.btnAlterar.grid(row=0, column=0, padx=6)
+
         self.btnAgora = ctk.CTkButton(self.btnFrame, text="Fazer agora", command=self._executar_backup_agora)
         self.btnAgora.grid(row=0, column=1, padx=6)
 
-        # Thread de atualização do label
+        # Atualizador
         threading.Thread(target=self._loop_atualizar, daemon=True).start()
 
     # ----------------- Label/contador -----------------
@@ -91,7 +197,6 @@ class InterfaceApp:
         else:
             log("❌ Falha ao executar o backup completo.")
         self.backup_em_andamento = False
-
 
     # ----------------- Popups -----------------
     def _popup_confirmar(self, texto, callback):
@@ -275,6 +380,189 @@ class InterfaceApp:
         popup_hora.bind("<Return>", lambda e: confirmar_hora())
         popup_hora.bind("<Escape>", lambda e: popup_hora.destroy())
 
+    # ---------------- Configurações --------------------
+    def _abrir_configuracoes(self):
+        def criar():
+            popup_conf = ctk.CTkToplevel(self.root)
+            popup_conf.title("Configurações")
+            popup_conf.geometry("420x400")
+            popup_conf.resizable(False, False)
+            popup_conf.transient(self.root)
+            self._centralizar(popup_conf)
+
+            # --- 1️⃣ BackupDir ---
+            ctk.CTkLabel(popup_conf, text="📁 Local do backup (backupDir):").pack(pady=(12, 2))
+            frame_backup = ctk.CTkFrame(popup_conf)
+            frame_backup.pack(pady=(0, 10), padx=10, fill="x")
+
+            entry_backup = ctk.CTkEntry(frame_backup)
+            entry_backup.insert(0, conf.get("backupDir", ""))
+            entry_backup.pack(side="left", expand=True, fill="x", padx=(8, 4), pady=8)
+
+            def escolher_pasta():
+                from tkinter import Tk
+
+                # Cria uma janela Tk temporária com handle válido na taskbar
+                dummy = Tk()
+                dummy.withdraw()  # invisível
+                dummy.update_idletasks()
+
+                # Define diretório inicial seguro (evita drives inexistentes)
+                initial_dir = conf.get("backupDir", "")
+                if not initial_dir or not os.path.exists(initial_dir):
+                    initial_dir = str(_this_dir)
+
+                try:
+                    pasta = filedialog.askdirectory(
+                        title="Selecione a pasta de backup",
+                        initialdir=initial_dir,
+                        parent=dummy
+                    )
+                finally:
+                    dummy.destroy()  # fecha janela auxiliar
+
+                if pasta:
+                    entry_backup.delete(0, "end")
+                    entry_backup.insert(0, pasta)
+
+
+            def escolher_exe():
+                from tkinter import filedialog
+                caminho = filedialog.askopenfilename(title="Selecione o ClippStore.EXE", filetypes=[("Executável", "*.exe")])
+                if caminho:
+                    entry_app.delete(0, "end")
+                    entry_app.insert(0, caminho)
+            
+            def abrir_tutorial_backup():
+                self._abrir_tutorial_backup()
+                
+            ctk.CTkButton(frame_backup, text="📂", width=32, command=escolher_pasta).pack(side="left", padx=(0, 4))
+            ctk.CTkButton(frame_backup, text="❔", width=32, command=abrir_tutorial_backup).pack(side="left", padx=(0, 8))
+
+            # --- 2️⃣ Login/Senha ---
+            ctk.CTkLabel(popup_conf, text="👤 Usuário:").pack(pady=(6, 2))
+            entry_user = ctk.CTkEntry(popup_conf)
+            entry_user.insert(0, conf.get("usuario", ""))
+            entry_user.pack(padx=10, fill="x")
+
+            ctk.CTkLabel(popup_conf, text="🔑 Senha:").pack(pady=(6, 2))
+            entry_senha = ctk.CTkEntry(popup_conf, show="*")
+            entry_senha.insert(0, conf.get("senha", ""))
+            entry_senha.pack(padx=10, fill="x")
+
+            # --- 3️⃣ Executável do Clipp ---
+            ctk.CTkLabel(popup_conf, text="💾 Caminho do Clipp (ClippStore.EXE):").pack(pady=(10, 2))
+            frame_app = ctk.CTkFrame(popup_conf)
+            frame_app.pack(pady=(0, 8), padx=10, fill="x")
+
+            entry_app = ctk.CTkEntry(frame_app)
+            entry_app.insert(0, conf.get("aplicativo", ""))
+            entry_app.pack(side="left", expand=True, fill="x", padx=(8, 4), pady=8)
+
+            def procurar_automaticamente():
+                self._procurar_clipp_auto(entry_app)
+
+            ctk.CTkButton(frame_app, text="📂", width=32, command=escolher_exe).pack(side="left", padx=(0, 4))
+            ctk.CTkButton(frame_app, text="🔍", width=32, command=procurar_automaticamente).pack(side="left", padx=(0, 8))
+
+            # --- Botões finais ---
+            frame_btns = ctk.CTkFrame(popup_conf)
+            frame_btns.pack(pady=(20, 12))
+
+            def salvar_config():
+                novo_conf = conf.copy()
+                novo_conf["backupDir"] = entry_backup.get().strip()
+                novo_conf["usuario"] = entry_user.get().strip()
+                novo_conf["senha"] = entry_senha.get().strip()
+                novo_conf["aplicativo"] = entry_app.get().strip()
+
+                try:
+                    with open(_conf_path, "w", encoding="utf-8") as f:
+                        json.dump(novo_conf, f, indent=2, ensure_ascii=False)
+                    log("⚙️ Configurações salvas com sucesso.")
+
+                    # 🔄 Atualiza o conf global na memória
+                    conf.clear()
+                    conf.update(novo_conf)
+
+                    popup_conf.destroy()
+                except Exception as e:
+                    log(f"❌ Falha ao salvar config.json: {e}")
+
+            ctk.CTkButton(frame_btns, text="Salvar", command=salvar_config).grid(row=0, column=0, padx=8)
+            ctk.CTkButton(frame_btns, text="Fechar", command=popup_conf.destroy).grid(row=0, column=1, padx=8)
+
+            popup_conf.bind("<Escape>", lambda e: popup_conf.destroy())
+            return popup_conf
+
+        self._abrir_popup_unico(criar)
+
+    def _abrir_tutorial_backup(self):
+        # se houver um popup aberto (ex: popup_conf), usa ele como parent;
+        # caso contrário, usa a janela principal (root).
+        parent = self._popup_aberto if (self._popup_aberto and self._popup_aberto.winfo_exists()) else self.root
+
+        popup_tuto = ctk.CTkToplevel(parent)  # NOTE: passar parent garante relação correta
+        popup_tuto.title("Como encontrar o local do backup do Clipp")
+        popup_tuto.geometry("650x400")
+        popup_tuto.resizable(False, False)
+
+        # associa ao parent e garante que fique na frente
+        popup_tuto.transient(parent)
+        try:
+            popup_tuto.lift(aboveThis=parent)
+        except Exception:
+            popup_tuto.lift()
+        popup_tuto.attributes("-topmost", True)
+        popup_tuto.after(200, lambda: popup_tuto.attributes("-topmost", False))
+
+        # faz com que receba foco e torne modal (impede clicks no parent enquanto aberto)
+        try:
+            popup_tuto.grab_set()
+        except Exception:
+            pass
+        try:
+            popup_tuto.focus_force()
+        except Exception:
+            pass
+
+        self._centralizar(popup_tuto)
+
+        img_dir = Path(__file__).parent / "tutorial_imgs"
+        imagens = sorted([img_dir / f for f in os.listdir(img_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
+
+        if not imagens:
+            ctk.CTkLabel(popup_tuto, text="Nenhuma imagem de tutorial encontrada.").pack(pady=20)
+            return
+
+        tamanhos = [
+            (555, 305),  # 1ª imagem
+            (626, 302),  # 2ª imagem
+        ]
+
+        imagens_ciclo = cycle(enumerate(imagens))
+        img_label = ctk.CTkLabel(popup_tuto, text="")
+        img_label.pack(expand=True, pady=10)
+
+        def mostrar_proxima():
+            idx, img_path = next(imagens_ciclo)
+            img = Image.open(img_path)
+
+            if idx < len(tamanhos):
+                largura, altura = tamanhos[idx]
+                img = img.resize((largura, altura))
+            else:
+                img.thumbnail((800, 600))
+
+            photo = ImageTk.PhotoImage(img)
+            img_label.configure(image=photo)
+            img_label.image = photo
+            popup_tuto.title("Como encontrar o local do backup do Clipp")
+
+        ctk.CTkButton(popup_tuto, text="Próxima imagem →", command=mostrar_proxima).pack(pady=(0, 12))
+        mostrar_proxima()
+
+
     # ----------------- Utils -----------------
     def _validar_hhmm(self, texto):
         if len(texto) != 5 or texto[2] != ":":
@@ -322,6 +610,9 @@ class InterfaceApp:
                 self._fechar_popup()
                 self._stop_event.set()
                 self.root.destroy()
+                if self.fechar_callback:
+                    self.fechar_callback()
+
 
             ctk.CTkButton(frame, text="Cancelar", command=self._fechar_popup).grid(row=0, column=0, padx=6)
             ctk.CTkButton(frame, text="Fechar", command=confirmar).grid(row=0, column=1, padx=6)
@@ -330,3 +621,42 @@ class InterfaceApp:
             return popup_sair
 
         self._abrir_popup_unico(criar)
+
+    def _procurar_clipp_auto(self, entry_widget):
+
+        def resolve_atalho(caminho):
+            shell = Dispatch("WScript.Shell")
+            atalho = shell.CreateShortcut(caminho)
+            return Path(atalho.TargetPath)
+
+        log("🔍 Procurando automaticamente pelo ClippStore.EXE...")
+
+        # 1️⃣ Busca na área de trabalho (atalhos)
+        desktop = Path(os.path.join(os.getenv("USERPROFILE"), "Desktop"))
+        for item in desktop.glob("*.lnk"):
+            try:
+                destino = resolve_atalho(str(item))
+                if destino.name.lower() == "clippstore.exe":
+                    log(f"✅ Encontrado via atalho: {destino}")
+                    entry_widget.delete(0, "end")
+                    entry_widget.insert(0, str(destino))
+                    return
+            except Exception:
+                continue
+
+        # 2️⃣ Busca rápida em unidades principais
+        drives = ["C:\\", "D:\\", "E:\\"]
+        for drive in drives:
+            for root, dirs, files in os.walk(drive):
+                for f in files:
+                    if f.lower() == "clippstore.exe":
+                        caminho = Path(root) / f
+                        log(f"✅ Encontrado: {caminho}")
+                        entry_widget.delete(0, "end")
+                        entry_widget.insert(0, str(caminho))
+                        return
+                if "program files" in root.lower() or len(root.split("\\")) > 5:
+                    # evita varreduras muito longas
+                    continue
+
+        log("❌ Não foi possível localizar o Clipp automaticamente.")
