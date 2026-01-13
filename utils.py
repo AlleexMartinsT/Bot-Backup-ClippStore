@@ -1,4 +1,6 @@
 import os, json
+import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 import pyautogui, threading
@@ -10,15 +12,14 @@ APPDATA = Path(os.getenv("APPDATA", Path.home() / "AppData/Roaming"))
 LOG_DIR = APPDATA / "BackupBot" / "relatorios"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "backup_log.txt"
+LOG_JSON = LOG_DIR / "backup_log.jsonl"
 
-_stop_event = threading.Event()
+_SESSION_ID = uuid.uuid4().hex
+_CURRENT_RUN_ID = None
 
-def fechar_tudo():
-    """Fecha interface, tray e threads de forma limpa."""
-    global tray
-    log("Encerrando aplicação...")
-
-    _stop_event.set()
+_START_RE = re.compile(r"Iniciando backup completo", re.IGNORECASE)
+_SUCCESS_RE = re.compile(r"backup conclu[ií]do com sucesso", re.IGNORECASE)
+_FAIL_RE = re.compile(r"falha|erro|timeout|n[aã]o detectei|n[aã]o foi poss[ií]vel", re.IGNORECASE)
     
 def get_config_path() -> Path:
     try:
@@ -181,13 +182,46 @@ def find_and_click_information_ok(logger=None, timeout: int = 8) -> bool:
         time.sleep(0.6)
     return False
 
+def _update_run_context(mensagem: str):
+    global _CURRENT_RUN_ID
+    event = None
+
+    if _START_RE.search(mensagem):
+        _CURRENT_RUN_ID = uuid.uuid4().hex
+        event = "BACKUP_START"
+    elif _SUCCESS_RE.search(mensagem):
+        event = "BACKUP_DONE"
+        _CURRENT_RUN_ID = None
+    elif _FAIL_RE.search(mensagem):
+        event = "BACKUP_FAIL"
+        _CURRENT_RUN_ID = None
+
+    return _CURRENT_RUN_ID, event
+
+def _write_json_log(ts: str, mensagem: str, run_id: str | None, event: str | None):
+    payload = {
+        "ts": ts,
+        "session_id": _SESSION_ID,
+        "run_id": run_id,
+        "event": event,
+        "message": mensagem,
+    }
+    try:
+        with open(LOG_JSON, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 def log(mensagem: str):
-    linha = f"{datetime.now().isoformat(sep=' ', timespec='seconds')} - {mensagem}\n"
+    ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+    run_id, event = _update_run_context(mensagem)
+    linha = f"{ts} - {mensagem}\n"
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(linha)
     except Exception:
         pass
+    _write_json_log(ts, mensagem, run_id, event)
     print(linha.strip())
 
 def salvar_screenshot(prefixo="erro"):

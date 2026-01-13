@@ -48,7 +48,7 @@ def _arquivo_estavel(caminho: Path, intervalo: int = 5) -> bool:
     except Exception:
         return False
 
-def aguardar_arquivos_backup(origem_dir: str, log=print, timeout_seg=900, intervalo=5, esperado=3):
+def aguardar_arquivos_backup(origem_dir: str, log=print, timeout_seg=900, intervalo=5, esperado=1):
     """
     Aguarda até detectar 'esperado' arquivos CLIPPddmmyyyy*.zip (aceitando sufixos).
     Verifica estabilidade do arquivo antes de considerá-lo.
@@ -121,15 +121,18 @@ def mover_arquivos(origem_dir: str, destino_dir: Path, arquivos: list, log=print
         except Exception as e:
             log(f"Erro ao mover {origem.name}: {e}")
 
-def gerenciar_backup(backup_dir: str, log=print):
+def gerenciar_backup(backup_dir: str, log=print, esperado_minimo=1) -> Path | None:
     """
     Cria a pasta do dia, aguarda a geração dos arquivos de backup e os move.
-    Retorna True se tudo ocorreu bem.
+    Retorna o Path da pasta de destino ou None em caso de erro.
     """
     destino = criar_pasta_backup(backup_dir)
-    arquivos = aguardar_arquivos_backup(backup_dir, log=log)
+    arquivos = aguardar_arquivos_backup(backup_dir, log=log, esperado=esperado_minimo)
+
     if not arquivos:
-        return False
+        return None
+
     mover_arquivos(backup_dir, destino, arquivos, log=log)
     log(f"✅ Backup concluído e armazenado em: {destino}")
-    return True
+    return destino
+

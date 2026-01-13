@@ -6,9 +6,9 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from automacao_refatorado import executar_backup_completo
-from utils import log, carregar_config
+from utils import log, carregar_config, get_config_path
 
-_conf_path = Path(__file__).parent / "config.json"
+_conf_path = get_config_path()
 
 conf = None
 PROXIMO_BACKUP = None  # datetime do próximo backup manual
@@ -97,6 +97,40 @@ def agenda():
 
     log("Agendador: agenda atualizada.")
 
+def resumo_agenda():
+    """
+    Retorna um resumo legível dos horários configurados para cada dia
+    + o próximo backup agendado
+    + qualquer backup manual configurado.
+    """
+    conf = carregar_config()
+    linhas = []
+    linhas.append("==== AGENDA DO BACKUP ====\n")
+
+    # Segunda a sexta
+    for i in range(5):
+        dia_nome = DIAS_MAP[i]
+        hora = conf.get(f"horario{dia_nome}", conf.get("horarioSemana", "18:30"))
+        linhas.append(f"{dia_nome}: {hora}")
+
+    # Sábado
+    linhas.append(f"Sabado: {conf.get('horarioSabado', '13:00')}")
+
+    linhas.append("\n==== PRÓXIMO BACKUP ====")
+    proximo = get_proximo_backup()
+    if proximo:
+        linhas.append(proximo.strftime("%d/%m/%Y %H:%M"))
+    else:
+        linhas.append("Nenhum programado.")
+
+    # Backup manual (se existir)
+    global PROXIMO_BACKUP
+    if PROXIMO_BACKUP:
+        linhas.append("\n==== BACKUP MANUAL AGENDADO ====")
+        linhas.append(PROXIMO_BACKUP.strftime("%d/%m/%Y %H:%M"))
+
+    return "\n".join(linhas)
+
 # ----------------- Loop principal -----------------
 def loopAgendador(stop_event: threading.Event, tray_ref=None):
     global tray
@@ -151,32 +185,80 @@ def get_proximo_backup() -> datetime | None:
 
 # ----------------- Atualizar horário -----------------
 def atualizar_horario_config(tipo, hora, dia_especifico=None, dia_semana=None):
+    """
+    retorna True se a alteração foi aplicada com sucesso, False caso contrário.
+    """
     global PROXIMO_BACKUP
-    conf = carregar_config()
-    
+    try:
+        conf = carregar_config()
+    except Exception as e:
+        log(f"Falha ao carregar config para atualizar: {e}")
+        return False
+
+    # Próximo backup manual (usa PROXIMO_BACKUP)
     if tipo == "proximo":
-        now = datetime.now()
-        hh, mm = map(int, hora.split(":"))
-        proximo = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        if proximo <= now:
-            proximo += timedelta(days=1)  # se passou, adiciona 1 dia
-        PROXIMO_BACKUP = proximo
-        log(f"Alterando próximo backup para: {PROXIMO_BACKUP.strftime('%d/%m/%Y %H:%M')}")
-        return
+        try:
+            now = datetime.now()
+            hh, mm = map(int, hora.split(":"))
+            proximo = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if proximo <= now:
+                proximo += timedelta(days=1)
+            PROXIMO_BACKUP = proximo
+            log(f"Alterando próximo backup para: {PROXIMO_BACKUP.strftime('%d/%m/%Y %H:%M')}")
+            return True
+        except Exception as e:
+            log(f"Erro ao setar PROXIMO_BACKUP: {e}")
+            return False
 
-    elif tipo == "uteis":
-        for d in ["Segunda","Terca","Quarta","Quinta","Sexta"]:
-            conf[f"horario{d}"] = hora
-    elif tipo == "sabado":
-        conf["horarioSabado"] = hora
-    elif tipo == "dia_semana" and dia_semana:
-        chave = f"horario{dia_semana.split('-')[0]}"  # "Segunda-feira" -> "horarioSegunda"
-        conf[chave] = hora
-    elif tipo == "especifico" and dia_especifico:
-        conf[f"horario{dia_especifico}"] = hora
-    else:
-        return
+    # Data específica -> define PROXIMO_BACKUP para essa data/hora
+    if tipo == "especifico" and dia_especifico:
+        try:
+            data = datetime.strptime(dia_especifico, "%d/%m/%Y")
+            hh, mm = map(int, hora.split(":"))
+            proximo = data.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if proximo <= datetime.now():
+                log(f"Data específica informada ({proximo}) já passou; ignorando alteração.")
+                return False
+            PROXIMO_BACKUP = proximo
+            log(f"Agendado backup específico para: {PROXIMO_BACKUP.strftime('%d/%m/%Y %H:%M')}")
+            return True
+        except Exception as e:
+            log(f"Erro ao interpretar data específica: {e}")
+            return False
 
-    with open(_conf_path, "w", encoding="utf-8") as f:
-        json.dump(conf, f, indent=2)
-    log(f"Configuração atualizada: {tipo} -> {hora}")
+    # Horários permanentes (escreve no config)
+    try:
+        if tipo == "uteis":
+            for d in ["Segunda","Terca","Quarta","Quinta","Sexta"]:
+                conf[f"horario{d}"] = hora
+        elif tipo == "sabado":
+            conf["horarioSabado"] = hora
+        elif tipo == "dia_semana" and dia_semana:
+            chave = f"horario{dia_semana.split('-')[0]}"
+            conf[chave] = hora
+        else:
+            log(f"Tipo inválido em atualizar_horario_config: {tipo}")
+            return False
+
+        with open(_conf_path, "w", encoding="utf-8") as f:
+            json.dump(conf, f, indent=2, ensure_ascii=False)
+        log(f"Configuração atualizada: {tipo} -> {hora}")
+
+    except Exception as e:
+        log(f"Falha ao salvar config.json em atualizar_horario_config: {e}")
+        return False
+
+    # Recria agenda para refletir mudanças
+    try:
+        agenda()
+        # opcional: logar jobs atuais para debug
+        try:
+            log(f"Agenda atual (jobs): {len(schedule.jobs)}")
+        except Exception:
+            pass
+        log("Agenda reiniciada após alteração de configuração.")
+        return True
+    except Exception as e:
+        log(f"Erro ao reiniciar agenda: {e}")
+        return False
+

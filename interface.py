@@ -9,7 +9,7 @@ from itertools import cycle
 from datetime import datetime, timedelta
 from pathlib import Path
 from utils import log, get_config_path
-from agendador import get_proximo_backup, atualizar_horario_config
+from agendador import get_proximo_backup, atualizar_horario_config, resumo_agenda
 from win32com.client import Dispatch
 from tray import ICON_PATH
 
@@ -24,6 +24,8 @@ with open(_conf_path, encoding="utf-8") as f:
         conf = json.load(f)
     except json.JSONDecodeError:
         conf = {} 
+
+print("INTERFACE CONFIG:", _conf_path)
 
 # Caminho dos ícones
 ICON_PATH_CONFIG = Path(__file__).parent / "icons" / "config.png"
@@ -230,6 +232,23 @@ class InterfaceApp:
             self._popup_aberto.destroy()
         self._popup_aberto = None
 
+    def mostrar_agenda(self, texto):
+        popup = ctk.CTkToplevel(self.root)
+        popup.title("Agendamentos")
+        popup.geometry("480x420")
+        popup.resizable(False, False)
+        self._centralizar(popup)
+
+        txt = ctk.CTkTextbox(popup, width=460, height=360)
+        txt.pack(padx=10, pady=10)
+        txt.insert("1.0", texto)
+        txt.configure(state="disabled", text_color="white")
+
+        ctk.CTkButton(popup, text="Fechar", command=popup.destroy).pack(pady=6)
+
+    def abrir_resumo_agenda(self):
+        texto = resumo_agenda()
+        self.mostrar_agenda(texto)
     # ----------------- Alterar agenda -----------------
     def _alterar_agenda(self):
         def criar():
@@ -354,15 +373,26 @@ class InterfaceApp:
                 if proximo <= agora:
                     proximo += timedelta(days=1)
                     
+                # chama e verifica o resultado
+                ok = False
                 if dia_semana:
-                    atualizar_horario_config("dia_semana", hora, dia_semana=dia_semana)
+                    ok = atualizar_horario_config("dia_semana", hora, dia_semana=dia_semana)
                 elif tipo == "proximo":
-                    atualizar_horario_config("proximo", hora)
+                    ok = atualizar_horario_config("proximo", hora)
                 else:
-                    atualizar_horario_config(tipo, hora, dia_especifico)
-                    
-                self._atualizar_label()
-                popup_hora.destroy()
+                    ok = atualizar_horario_config(tipo, hora, dia_especifico)
+
+                # atualiza label imediatamente e novamente em 0.5s para garantir que a alteração no arquivo/agenda
+                # foi recarregada pelo agendador
+                if ok:
+                    self._atualizar_label()
+                    # agendamos uma atualização curta para garantir propagação
+                    self.root.after(500, self._atualizar_label)
+                    popup_hora.destroy()
+                else:
+                    log("Falha ao aplicar alteração de horário (ver logs).")
+                    entry.configure(border_color="red")
+
             except Exception:
                 entry.configure(border_color="red")
 

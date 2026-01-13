@@ -12,6 +12,7 @@ import os, time, threading, traceback, json, pyautogui, psutil, sys
 from fecharClipp import fechar_clipp_e_confirmar_backup_refatorado
 from pathlib import Path
 from pywinauto import Desktop, Application
+from utils import get_config_path
 from tentar_login_refatorado import tentar_login_refatorado
 from winutils import get_desktop, safe_click
 from backup_watcher import BackupWatcher
@@ -256,7 +257,8 @@ def executar_backup_completo(config_path: Path | None = None) -> str:
     try:
         # --- 1. Carregar config.json ---
         if config_path is None:
-            config_path = Path(__file__).parent / "config.json"
+            config_path = get_config_path()
+
         if not config_path.exists():
             log(f"❌ Arquivo de configuração não encontrado em {config_path}")
             return "erro"
@@ -311,8 +313,9 @@ def executar_backup_completo(config_path: Path | None = None) -> str:
         backup_watcher.completed_event.wait(timeout=backup_watcher.timeout_total)
 
         from backup_manager import gerenciar_backup
-        gerenciar_backup(backup_dir="D:\\BACKUP", log=log)
         if backup_watcher.completed_event.is_set():
+            log("Backup finalizado — nenhum arquivo adicional será criado.")
+            gerenciar_backup(backup_dir=conf.get("backupDir", "D:\\BACKUP"), log=log, esperado_minimo=1)
             watcher.stop()
             backup_watcher.stop()
             return "done"

@@ -1,18 +1,15 @@
 # main.py
-# Inicia tray, interface e agendador.
-
 import threading
 import os
 import sys
 from pathlib import Path
 from interface import InterfaceApp
-from tray import TrayController  # alterado aqui
+from tray import TrayController
 from agendador import loopAgendador
-from utils import log, fechar_tudo
+from utils import log
 
 _stop_event = threading.Event()
-
-tray = None  # variável global opcional para acessar de outros módulos
+tray = None
 
 def abrir_relatorios():
     from os import startfile
@@ -20,31 +17,24 @@ def abrir_relatorios():
     appdata.mkdir(parents=True, exist_ok=True)
     startfile(str(appdata))
 
-    try:
-        if tray and tray.icon:
-            tray.icon.visible = False
-            tray.icon.stop()
-    except Exception as e:
-        log(f"Erro ao parar tray: {e}")
-
-    os._exit(0)
-
 def main():
     global tray
     log("Backup Bot iniciando.")
 
-    # inicia o tray
-    tray = TrayController(abrir_relatorios, fechar_tudo)
-    tray.run()
-    tray.set_status("inicio")  # ícone inicial
+    # 1️Cria a interface primeiro
+    app = InterfaceApp()
 
-    # inicia o agendador em thread separada
+    # 2️Cria o tray e passa a interface para ele
+    tray = TrayController(abrir_relatorios)
+    tray.interface_ref = app       # <-- ESSENCIAL
+    tray.run()
+    tray.set_status("inicio")
+
+    # 3️Inicia o agendador
     th_ag = threading.Thread(target=loopAgendador, args=(_stop_event,), daemon=True)
     th_ag.start()
 
-    # inicia interface principal
-    app = InterfaceApp()
-    app.fechar_callback = fechar_tudo  # adiciona essa linha
+    # 4️Inicia a interface
     app.start()
 
 if __name__ == "__main__":
