@@ -6,3 +6,10 @@ dist/
 deteca_janelas.py
 requirements.txt
 upload_nuvem.py
+backup_runs.csv
+model_fail_predictor.npz
+scripts/
+.vscode/
+backup_log.txt
+backup_log.jsonl
+backup_stats.json
